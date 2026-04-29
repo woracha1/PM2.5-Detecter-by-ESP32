@@ -6,7 +6,7 @@
 
 // ===== NTP =====
 const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 25200;  // GMT+7 (ไทย)
+const long  gmtOffset_sec = 25200;
 const int   daylightOffset_sec = 0;
 
 // ===== WiFi =====
@@ -20,6 +20,7 @@ PubSubClient client(espClient);
 
 // ===== Sensor =====
 #define DHT_PIN 4
+#define MQ2_PIN 34
 AM2302::AM2302_Sensor am2302{DHT_PIN};
 HardwareSerial pmSerial(1);
 
@@ -31,14 +32,12 @@ const long interval = 2000;
 void setup_wifi() {
   Serial.print("Connecting to WiFi");
   WiFi.begin(ssid, password);
-
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 20) {
     delay(500);
     Serial.print(".");
     attempts++;
   }
-
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
   } else {
@@ -55,11 +54,6 @@ void reconnect() {
   } else {
     Serial.print("MQTT failed, rc=");
     Serial.println(client.state());
-    // rc ที่เห็นบ่อย:
-    // -2 = connect failed (network)
-    // -3 = connection lost
-    // -4 = timeout
-    //  4 = bad credentials
   }
 }
 
@@ -79,22 +73,29 @@ int readPM25() {
   return -1;
 }
 
+// ===== อ่าน MQ-2 =====
+int readMQ2() {
+  return analogRead(MQ2_PIN);  
+}
+
 // ===== setup =====
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
   setup_wifi();
-
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   Serial.println("NTP synced");
 
   client.setServer(mqtt_server, 1883);
-  client.setBufferSize(512);   // เพิ่มบรรทัดนี้
-  client.setKeepAlive(60);     // เพิ่มบรรทัดนี้
+  client.setBufferSize(512);
+  client.setKeepAlive(60);
 
   am2302.begin();
   pmSerial.begin(9600, SERIAL_8N1, 16, 17);
+
+  Serial.println("MQ-2 warming up (20s)...");
+  delay(20000);
 
   Serial.println("Setup done");
 }
@@ -111,27 +112,28 @@ void loop() {
     lastRead = currentMillis;
 
     am2302.read();
-    float temp = am2302.get_Temperature();
-    float hum  = am2302.get_Humidity();
-    int pm25   = readPM25();
+    float temp  = am2302.get_Temperature();
+    float hum   = am2302.get_Humidity();
+    int   pm25  = readPM25();
     if (pm25 == -1) pm25 = 0;
+    int   smoke = readMQ2(); 
 
     time_t now;
     time(&now);
 
     String payload = "{";
-    payload += "\"pm25Value\":\"" + String(pm25) + "\",";
-    payload += "\"co2Value\":\"0\",";
-    payload += "\"humidValue\":\"" + String(hum) + "\",";
-    payload += "\"temperature\":\"" + String(temp) + "\",";
-    payload += "\"timestamp\":\"" + String((long)now) + "\""; 
+    payload += "\"pm25Value\":\""   + String(pm25)        + "\",";
+    payload += "\"co2Value\":\""    + String(smoke)        + "\",";  
+    payload += "\"humidValue\":\""  + String(hum)          + "\",";
+    payload += "\"temperature\":\"" + String(temp)         + "\",";
+    payload += "\"timestamp\":\""   + String((long)now)    + "\"";
     payload += "}";
 
     Serial.println(payload);
     Serial.println("----------------------");
 
     if (WiFi.status() == WL_CONNECTED && client.connected()) {
-      client.publish("test/hello", payload.c_str());
+      client.publish("pmproj/sensor/outside", payload.c_str());
     }
   }
 }
